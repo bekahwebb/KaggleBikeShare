@@ -94,3 +94,55 @@ bind_cols(., bike_test) %>% #Bind predictions with test data
 
 ## Write out the file8
 vroom_write(x=pois_kaggle_submission, file="./PoissonPreds.csv", delim=",")
+
+#Data wrangling September 16, 2024
+#1 clean data
+# Data Cleaning
+
+clean_bike <- bike_train %>%
+  select(-c('casual', 'registered')) %>%
+  mutate(count = log(count))
+
+
+# Feature Engineering
+
+my_recipe <- recipe(count ~ ., data = clean_bike) %>%
+  step_mutate(weather = ifelse(weather== 4,3, weather)) %>%  # Recode weather category
+  step_mutate(weather = factor(weather)) %>% #Convert season to factor
+  step_mutate(season = factor(season)) %>%  # Convert season to factor
+  step_time(datetime, features = "hour") %>%  # Extract hour from datetime column
+  step_rm(datetime) %>%
+  step_zv(all_predictors()) %>%  # Remove zero-variance predictors
+  step_dummy(all_nominal_predictors()) %>%  # Create dummy variables
+  step_poly(temp, degree = 2) %>%  # Create polynomial features for temp
+  step_corr(all_predictors(), threshold = 0.5)  # Remove highly correlated predictors
+
+# Preprocessing
+prepped_recipe <- prep(my_recipe)
+#Baking
+bake(prepped_recipe, new_data = bike_train)
+
+
+## Define a Model
+lin_model <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+## Combine into a Workflow and fit
+bike_workflow <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(lin_model) %>%
+  fit(data=bike_train)
+
+## Run all the steps on test data
+lin_preds <- predict(bike_workflow, new_data = bike_test)
+
+## Format the Predictions for Submission to Kaggle
+linear_kaggle_submission <- lin_preds %>%
+  bind_cols(., bike_test) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+  mutate(datetime=as.character(format(datetime)))#%>% #needed for right format to Kaggle
+#mutate(count = exp(count))
+
+## Write out the file
+vroom_write(x=linear_kaggle_submission, file="BakedlinearPreds.csv", delim=",")
