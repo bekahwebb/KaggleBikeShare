@@ -71,7 +71,7 @@ pois_kaggle_submission <- bike_predictions %>%
 ## Write out the file
 vroom_write(x=pois_kaggle_submission, file="./PoissonPreds.csv", delim=",")
 
-#Data wrangling September 16, 2024 and making recipe and workflow functions
+# September 16, 2024 Data wrangling and making recipe and workflow functions
 #1 clean data
 # Data Cleaning may be overfitting the data, warning for the response, keep adjusting the features so I don't 
 #have too much correlated data.
@@ -118,25 +118,29 @@ lin_model <- linear_reg() %>%
 bike_workflow <- workflow() %>%
   add_recipe(my_recipe) %>%
   add_model(lin_model) %>%
-  fit(data=bike_train)#fit the workflow
+  fit(data=clean_bike)#fit the workflow
 
 ## Run all the steps on test data
 lin_preds <- predict(bike_workflow, new_data = bike_test)
 
 ## Format the Predictions for Submission to Kaggle
 linear_kaggle_submission <- lin_preds %>%
-  mutate(count = exp(.pred)) %>%  # Back-transform the log to original scale
-  bind_cols(., bike_test) %>% #Bind predictions with test data
-  select(datetime, .pred) %>% #Just keep datetime and prediction variables
-  mutate(datetime=as.character(format(datetime))) %>% #needed for right format to Kaggle
   rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
-  mutate(count=pmax(0, count))
-
-
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+  mutate(count = exp(count)) %>%  # Back-transform the log to original scale
+  bind_cols(., bike_test) %>% #Bind predictions with test data
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  mutate(datetime=as.character(format(datetime))) %>% #needed for right format to Kaggle
+  
+  
 ## Write out the file
 vroom_write(x=linear_kaggle_submission, file="BakedlinearPreds.csv", delim=",")
 
 #9/18/24 Penalized Regression
+
+clean_bike <- bike_train %>%
+  select(-c('casual','registered')) %>%
+  mutate(count = log(count))
 
 ## Create a recipe
 bike_recipe <- recipe(count~., data=clean_bike) %>%
@@ -162,20 +166,18 @@ preg_model <- linear_reg(penalty=0, mixture= 0) %>% #Set model and tuning so far
 preg_wf <- workflow() %>%
   add_recipe(bike_recipe) %>%
   add_model(preg_model) %>%
-  fit(data=bike_train)
+  fit(data=clean_bike)
 
 ## Run all the steps on test data
 predict(preg_wf, new_data=bike_test)
 
 ## Format the Predictions for Submission to Kaggle
 preg_linear_kaggle_submission <- predict(preg_wf, new_data=bike_test) %>%
-  mutate(count = exp(.pred)) %>%  # Back-transform the log to original scale
+  rename(count=.pred) %>%
+  mutate(count = exp(count)) %>%  # Back-transform the log to original scale
   bind_cols(., bike_test) %>% #Bind predictions with test data
-  select(datetime, .pred) %>% #Just keep datetime and prediction variables
-  mutate(datetime=as.character(format(datetime))) %>% #needed for right format to Kaggle
-  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
-  mutate(count=pmax(0, count))
-
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
 
 ## Write out the file
 vroom_write(x=preg_linear_kaggle_submission, file="PenalizedPreds.csv", delim=",")
