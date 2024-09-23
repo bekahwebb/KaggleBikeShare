@@ -13,6 +13,7 @@ library(magrittr)
 library(tidymodels)
 library(lubridate)
 library(poissonreg) #if you want to do penalized, poisson regression
+library(rpart)
 
 bike_test <- vroom("C:/Users/bekah/Downloads/bike-sharing-demand/test.csv")
 bike_test
@@ -71,7 +72,7 @@ pois_kaggle_submission <- bike_predictions %>%
 ## Write out the file
 vroom_write(x=pois_kaggle_submission, file="./PoissonPreds.csv", delim=",")
 
-# September 16, 2024 Data wrangling and making recipe and workflow functions
+#September 16, 2024 Data wrangling and making recipe and workflow functions
 #1 clean data
 # Data Cleaning may be overfitting the data, warning for the response, keep adjusting the features so I don't 
 #have too much correlated data.
@@ -84,7 +85,7 @@ clean_bike <- bike_train %>%
 
 # Feature Engineering #maybe create an interaction between hour and weekday, maybe make a hour a factor
 
-my_recipe <- recipe(count ~ ., data = clean_bike) %>%
+my_recipe <- recipe(count ~ ., data = clean_bike) %>% #warning could mean too many features, maybe too complex
   step_mutate(weather = ifelse(weather== 4,3, weather)) %>%  # Recode weather category
   step_mutate(weather = factor(weather, levels=1:3, labels=c("Clear", "Mist", "Precipitation"))) %>% #Convert season to factor
   step_mutate(season = factor(season, levels=1:4, labels=c("Spring","Summer","Fall", "Winter"))) %>%  # Convert season to factor
@@ -125,22 +126,18 @@ lin_preds <- predict(bike_workflow, new_data = bike_test)
 
 ## Format the Predictions for Submission to Kaggle
 linear_kaggle_submission <- lin_preds %>%
-  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
-  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+  rename(count=.pred) %>%
   mutate(count = exp(count)) %>%  # Back-transform the log to original scale
   bind_cols(., bike_test) %>% #Bind predictions with test data
   select(datetime, count) %>% #Just keep datetime and prediction variables
-  mutate(datetime=as.character(format(datetime))) %>% #needed for right format to Kaggle
-  
-  
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
 ## Write out the file
 vroom_write(x=linear_kaggle_submission, file="BakedlinearPreds.csv", delim=",")
 
-#9/18/24 Penalized Regression
+#kaggle score: 0.64417
 
-clean_bike <- bike_train %>%
-  select(-c('casual','registered')) %>%
-  mutate(count = log(count))
+#9/18/24 Penalized Regression
 
 ## Create a recipe
 bike_recipe <- recipe(count~., data=clean_bike) %>%
@@ -181,6 +178,7 @@ preg_linear_kaggle_submission <- predict(preg_wf, new_data=bike_test) %>%
 
 ## Write out the file
 vroom_write(x=preg_linear_kaggle_submission, file="PenalizedPreds.csv", delim=",")
+#kaggle score: 0.48734
 
 9/20/24
 clean_bike <- bike_train %>%
@@ -239,6 +237,7 @@ geom_line()
 ## Find Best Tuning Parameters
 bestTune <- CV_results %>%
 select_best(metric = "rmse")
+
 #TUNING MODELS IN R
 ## Finalize the Workflow & fit it
 final_wf <-
@@ -260,3 +259,95 @@ tuned_linear_kaggle_submission <- predict(final_wf, new_data=bike_test) %>%
 
 ## Write out the file
 vroom_write(x=tuned_linear_kaggle_submission, file="TunedPreds.csv", delim=",")
+#kaggle score: 0.47968
+
+#September 23, 2024
+
+clean_bike <- bike_train %>%
+  select(-c('casual','registered')) %>%
+  mutate(count = log(count))
+
+## Create a recipe
+bike_recipe <- recipe(count~., data=clean_bike) %>%
+  step_time(datetime, features="hour") %>% #extract hour
+  step_mutate(datetime_hour= factor(datetime_hour, levels=c(0:23), labels=c(0:23))) %>%
+  step_date(datetime, features = "dow" )%>% #extract day of week
+  step_interact(terms = ~ datetime_hour*workingday)%>%
+  step_rm(datetime) %>% 
+  step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors())%>% # Make mean 0, sd=1
+  step_corr(all_predictors())  # Remove highly correlated predictors
+
+
+# Preprocessing
+prepped_recipe <- prep(bike_recipe)
+#Baking
+tree_bike <- bake(prepped_recipe, new_data = bike_train)
+tree_bike
+
+
+## Regression tree model
+tree_model <- decision_tree(tree_depth = tune(),
+                        cost_complexity = tune(),
+                        min_n=tune()) %>% #Type of model
+  set_engine("rpart") %>% # What R function to use7
+  set_mode("regression")
+
+
+## Create a workflow with model & recipe
+tree_wf <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(tree_model)
+
+
+my_mod <- decision_tree(tree_depth = tune(),
+                        cost_complexity = tune(),
+                        min_n=tune()) %>% #Type of model
+  set_engine("rpart") %>% # What R function to use7
+  set_mode("regression")
+
+
+## Set up grid of tuning values
+grid_of_tuning_params <- grid_regular(tree_depth(),
+                                      cost_complexity(),
+                                      min_n(),
+                                      levels = 3) ## L^2 total tuning possibilities
+
+grid_of_tuning_params
+## Set up K-fold 
+## Split data for CV
+folds <- vfold_cv(clean_bike, v = 5, repeats=1)
+#TUNING MODELS IN R
+## Run the CV
+CV_results <- tree_wf %>%
+  tune_grid(resamples=folds,
+            grid=grid_of_tuning_params,
+            metrics=metric_set(rmse, mae, rsq)) #Or leave metrics NULL #mean absolute error, rsquared
+
+## Find best tuning parameters
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+#TUNING MODELS IN R
+## Finalize the Workflow & fit it
+final_wf <-
+  tree_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=clean_bike)
+
+## Finalize workflow and predict
+final_wf %>%
+  predict(new_data = bike_test)
+
+## Format the Predictions for Submission to Kaggle
+tuned_linear_kaggle_submission <- predict(final_wf, new_data=bike_test) %>%
+  rename(count=.pred) %>%
+  mutate(count = exp(count)) %>%  # Back-transform the log to original scale
+  bind_cols(., bike_test) %>% #Bind predictions with test data
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=tuned_linear_kaggle_submission, file="TreePreds.csv", delim=",")
+#kaggle score: 0.62831
+
