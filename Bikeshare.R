@@ -14,6 +14,7 @@ library(tidymodels)
 library(lubridate)
 library(poissonreg) #if you want to do penalized, poisson regression
 library(rpart)
+library(ranger)
 
 bike_test <- vroom("C:/Users/bekah/Downloads/bike-sharing-demand/test.csv")
 bike_test
@@ -261,7 +262,7 @@ tuned_linear_kaggle_submission <- predict(final_wf, new_data=bike_test) %>%
 vroom_write(x=tuned_linear_kaggle_submission, file="TunedPreds.csv", delim=",")
 #kaggle score: 0.47968
 
-#September 23, 2024
+#September 23, 2024 Regression Tree Model
 
 clean_bike <- bike_train %>%
   select(-c('casual','registered')) %>%
@@ -298,14 +299,6 @@ tree_model <- decision_tree(tree_depth = tune(),
 tree_wf <- workflow() %>%
   add_recipe(bike_recipe) %>%
   add_model(tree_model)
-
-
-my_mod <- decision_tree(tree_depth = tune(),
-                        cost_complexity = tune(),
-                        min_n=tune()) %>% #Type of model
-  set_engine("rpart") %>% # What R function to use7
-  set_mode("regression")
-
 
 ## Set up grid of tuning values
 grid_of_tuning_params <- grid_regular(tree_depth(),
@@ -350,4 +343,88 @@ tuned_linear_kaggle_submission <- predict(final_wf, new_data=bike_test) %>%
 ## Write out the file
 vroom_write(x=tuned_linear_kaggle_submission, file="TreePreds.csv", delim=",")
 #kaggle score: 0.62831
+
+#random forest model September 25, 2025
+#install.packages("ranger")
+#library(ranger)
+
+clean_bike <- bike_train %>%
+  select(-c('casual','registered')) %>%
+  mutate(count = log(count))
+
+## Create a recipe
+bike_recipe <- recipe(count~., data=clean_bike) %>%
+  step_time(datetime, features="hour") %>% #extract hour
+  step_mutate(datetime_hour= factor(datetime_hour, levels=c(0:23), labels=c(0:23))) %>%
+  step_date(datetime, features = "dow" )%>% #extract day of week
+  step_interact(terms = ~ datetime_hour*workingday)%>%
+  step_rm(datetime) %>% 
+  step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors())%>% # Make mean 0, sd=1
+  step_corr(all_predictors())  # Remove highly correlated predictors
+
+
+# Preprocessing
+prepped_recipe <- prep(bike_recipe)
+#Baking
+forest_bike <- bake(prepped_recipe, new_data = bike_train)
+forest_bike
+
+
+## Regression tree model
+rf_model <- rand_forest(mtry = tune(),
+                      min_n=tune(),
+                      trees=1000) %>% #Type of model
+  set_engine("ranger") %>% # What R function to use
+  set_mode("regression")
+
+
+## Create a workflow with model & recipe
+tree_wf <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(rf_model)
+
+## Set up grid of tuning values
+grid_of_tuning_params <- grid_regular(mtry(range=c(1,10)),
+                                      min_n(),
+                                      levels = 3) ## L^2 total tuning possibilities
+
+grid_of_tuning_params
+
+## Set up K-fold 
+## Split data for CV
+folds <- vfold_cv(clean_bike, v = 5, repeats=1)
+#TUNING MODELS IN R
+## Run the CV
+CV_results <- tree_wf %>%
+  tune_grid(resamples=folds,
+            grid=grid_of_tuning_params,
+            metrics=metric_set(rmse, mae, rsq)) #Or leave metrics NULL #mean absolute error, rsquared
+
+## Find best tuning parameters
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+#TUNING MODELS IN R
+## Finalize the Workflow & fit it
+final_wf <-
+  tree_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=clean_bike)
+
+## Finalize workflow and predict
+final_wf %>%
+  predict(new_data = bike_test)
+
+## Format the Predictions for Submission to Kaggle
+tuned_linear_kaggle_submission <- predict(final_wf, new_data=bike_test) %>%
+  rename(count=.pred) %>%
+  mutate(count = exp(count)) %>%  # Back-transform the log to original scale
+  bind_cols(., bike_test) %>% #Bind predictions with test data
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=tuned_linear_kaggle_submission, file="RFPreds.csv", delim=",")
+#kaggle score: 0.47537
 
