@@ -557,3 +557,105 @@ stacked_linear_kaggle_submission <- predict(stack_model, new_data = bike_test) %
 vroom_write(x=stacked_linear_kaggle_submission, file="StackPreds.csv", delim=",")
 #kaggle score is 0.47864 which is a little higher than my random forest results, and penalized regression model
 #may add the tree model to see if that helps lower my score if I am feeling ambitious :)
+
+##9/30/24 KNN and then maybe Bart
+install.packages('kknn')
+library('kknn')
+
+clean_bike <- bike_train %>%
+  select(-c('casual','registered')) %>%
+  mutate(count = log(count))
+
+# Feature Engineering #maybe create an interaction between hour and weekday, maybe make a hour a factor
+
+bike_recipe <- recipe(count~., data=clean_bike) %>%
+  step_time(datetime, features="hour") %>% #extract hour
+  step_mutate(datetime_hour= factor(datetime_hour, levels=c(0:23), labels=c(0:23))) %>%
+  step_date(datetime, features = "dow" )%>% #extract day of week
+  step_interact(terms = ~ datetime_hour*workingday)%>%
+  step_rm(datetime) %>% 
+  step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors())%>% # Make mean 0, sd=1
+  step_corr(all_predictors())  # Remove highly correlated predictors
+
+# Preprocessing
+prepped_recipe <- prep(my_recipe)
+#Baking
+test <- bake(prepped_recipe, new_data = bike_train)
+test
+
+## Define a Model
+knn_model <- nearest_neighbor() %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+## Combine into a Workflow and fit
+bike_workflow <- workflow() %>% #sets up a series of steps that you can apply to any dataset
+  add_recipe(my_recipe) %>%
+  add_model(knn_model) %>%
+  fit(data=clean_bike)#fit the workflow
+
+## Run all the steps on test data
+knn_preds <- predict(bike_workflow, new_data = bike_test)
+
+## Format the Predictions for Submission to Kaggle
+knn_kaggle_submission <- knn_preds %>%
+  rename(count=.pred) %>%
+  mutate(count = exp(count)) %>%  # Back-transform the log to original scale
+  bind_cols(., bike_test) %>% #Bind predictions with test data
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=knn_kaggle_submission, file="KNNPreds.csv", delim=",")
+#worse score 0.78987
+
+#try bart
+install.packages("dbarts")
+library("dbarts")
+clean_bike <- bike_train %>%
+  select(-c('casual','registered')) %>%
+  mutate(count = log(count))
+
+# Feature Engineering #maybe create an interaction between hour and weekday, maybe make a hour a factor
+
+bike_recipe <- recipe(count~., data=clean_bike) %>%
+  step_time(datetime, features="hour") %>% #extract hour
+  step_mutate(datetime_hour= factor(datetime_hour, levels=c(0:23), labels=c(0:23))) %>%
+  step_date(datetime, features = "dow" )%>% #extract day of week
+  step_interact(terms = ~ datetime_hour*workingday)%>%
+  step_rm(datetime) %>% 
+  step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors())%>% # Make mean 0, sd=1
+  step_corr(all_predictors())  # Remove highly correlated predictors
+
+# Preprocessing
+prepped_recipe <- prep(my_recipe)
+#Baking
+test <- bake(prepped_recipe, new_data = bike_train)
+test
+
+## Define a Model
+bart_model <- parsnip::bart(trees = 100)%>% 
+  set_engine("dbarts")%>% 
+  set_mode("regression")
+
+## Combine into a Workflow and fit
+bike_workflow <- workflow() %>% #sets up a series of steps that you can apply to any dataset
+  add_recipe(my_recipe) %>%
+  add_model(bart_model) %>%
+  fit(data=clean_bike)#fit the workflow
+
+## Run all the steps on test data
+bart_preds <- predict(bike_workflow, new_data = bike_test)
+
+## Format the Predictions for Submission to Kaggle
+bart_kaggle_submission <- bart_preds %>%
+  rename(count=.pred) %>%
+  mutate(count = exp(count)) %>%  # Back-transform the log to original scale
+  bind_cols(., bike_test) %>% #Bind predictions with test data
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=bart_kaggle_submission, file="BartPreds.csv", delim=",")
+#lowest score so far 0.43613
