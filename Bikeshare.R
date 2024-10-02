@@ -343,7 +343,7 @@ tuned_linear_kaggle_submission <- predict(final_wf, new_data=bike_test) %>%
 vroom_write(x=tuned_linear_kaggle_submission, file="TreePreds.csv", delim=",")
 #kaggle score: 0.62831
 
-#random forest model September 25, 2025
+#random forest model September 25, 2025 9/30/24 try to lower kaggle score with poly features, and year factored
 #install.packages("ranger")
 #library(ranger)
 
@@ -357,9 +357,13 @@ bike_recipe <- recipe(count~., data=clean_bike) %>%
   step_mutate(datetime_hour= factor(datetime_hour, levels=c(0:23), labels=c(0:23))) %>%
   step_date(datetime, features = "dow" )%>% #extract day of week
   step_interact(terms = ~ datetime_hour*workingday)%>%
+  step_mutate(year = factor(year(datetime))) %>%  # Extract year as a vector and factorize
   step_rm(datetime) %>% 
   step_dummy(all_nominal_predictors()) %>% #make dummy variables
   step_normalize(all_numeric_predictors())%>% # Make mean 0, sd=1
+  step_poly(temp, degree=2) %>% 
+  step_poly(windspeed, degree=2) %>%
+  step_poly(weather, degree = 2) %>%
   step_corr(all_predictors())  # Remove highly correlated predictors
 
 
@@ -370,10 +374,10 @@ forest_bike <- bake(prepped_recipe, new_data = bike_train)
 forest_bike
 
 
-## Regression tree model
+## Regression tree model 9/30/24 try 750 trees
 rf_model <- rand_forest(mtry = tune(),
                       min_n=tune(),
-                      trees=1000) %>% #Type of model
+                      trees=750) %>% #Type of model
   set_engine("ranger") %>% # What R function to use
   set_mode("regression")
 
@@ -428,6 +432,8 @@ vroom_write(x=tuned_linear_kaggle_submission, file="RFPreds.csv", delim=",")
 
 #kaggle score: 0.47537
 # with 1000 trees my score dropped slightly to 0.47392
+#750 trees, polynomial features for temp, weather and windspeed, extracting and factoring year slightly lowered
+#my score to 0.46418
 
 # stacked model September 27, 2024
 
@@ -588,6 +594,7 @@ test
 knn_model <- nearest_neighbor() %>%
   set_engine("kknn") %>%
   set_mode("regression")
+
 ## Combine into a Workflow and fit
 bike_workflow <- workflow() %>% #sets up a series of steps that you can apply to any dataset
   add_recipe(my_recipe) %>%
@@ -607,7 +614,7 @@ knn_kaggle_submission <- knn_preds %>%
 
 ## Write out the file
 vroom_write(x=knn_kaggle_submission, file="KNNPreds.csv", delim=",")
-#worse score 0.78987
+#worst recent score 0.78987
 
 #try bart
 install.packages("dbarts")
@@ -623,9 +630,14 @@ bike_recipe <- recipe(count~., data=clean_bike) %>%
   step_mutate(datetime_hour= factor(datetime_hour, levels=c(0:23), labels=c(0:23))) %>%
   step_date(datetime, features = "dow" )%>% #extract day of week
   step_interact(terms = ~ datetime_hour*workingday)%>%
+  step_interact(terms = ~ temp*humidity)%>%
+  step_mutate(year = factor(year(datetime)))%>% #extract year as a vector and factorize
   step_rm(datetime) %>% 
   step_dummy(all_nominal_predictors()) %>% #make dummy variables
   step_normalize(all_numeric_predictors())%>% # Make mean 0, sd=1
+  step_poly(temp, degree=2) %>% 
+  step_poly(windspeed, degree=2) %>%
+  step_poly(weather, degree = 2) %>%
   step_corr(all_predictors())  # Remove highly correlated predictors
 
 # Preprocessing
@@ -635,13 +647,17 @@ test <- bake(prepped_recipe, new_data = bike_train)
 test
 
 ## Define a Model
-bart_model <- parsnip::bart(trees = 100)%>% 
-  set_engine("dbarts")%>% 
-  set_mode("regression")
+bart_model <- parsnip::bart(
+  trees = 1000,
+  engine = "dbarts", 
+  mode = "regression",
+  prior_terminal_node_coef = .95, #Tune prior coefficient
+  prior_terminal_node_expo = 2, #Tune prior exponent
+  prior_outcome_range = 2)
 
 ## Combine into a Workflow and fit
 bike_workflow <- workflow() %>% #sets up a series of steps that you can apply to any dataset
-  add_recipe(my_recipe) %>%
+  add_recipe(bike_recipe) %>%
   add_model(bart_model) %>%
   fit(data=clean_bike)#fit the workflow
 
@@ -659,3 +675,7 @@ bart_kaggle_submission <- bart_preds %>%
 ## Write out the file
 vroom_write(x=bart_kaggle_submission, file="BartPreds.csv", delim=",")
 #lowest score so far 0.43613
+#adding polynomial features for temp, windspeed, and weather slightly lowered my kaggle score to 0.43384
+#factoring year slightly lowered my kaggle score to 0.43335
+# a little lower with an interaction between humidity and weather at 0.43235
+#woah adding 1000 trees and prior parameters lowered my score to a 0.36539!
